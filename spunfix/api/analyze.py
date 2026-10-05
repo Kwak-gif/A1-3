@@ -162,8 +162,69 @@ class handler(BaseHTTPRequestHandler):
         })
 
     def do_GET(self):
-        """GET 요청은 지원하지 않음을 JSON으로 안내"""
-        self._send_json(405, {"error": "POST 요청만 지원합니다.", "code": "METHOD_NOT_ALLOWED"})
+        """정적 파일(HTML, CSS, JS 등) 서빙 및 GET 요청 처리"""
+        # URL 경로 정리 (쿼리스트링 제거 및 앞 슬래시 제거)
+        path = self.path.split("?")[0].lstrip("/")
+        if not path or path == "index.html":
+            path = "index.html"
+
+        # 안전한 경로 조합 (디렉토리 탈출 방지)
+        safe_rel_path = os.path.normpath(path)
+        if safe_rel_path.startswith(".."):
+            self._send_json(403, {"error": "접근이 금지된 경로입니다.", "code": "FORBIDDEN"})
+            return
+
+        # spunfix 폴더 내부 또는 프로젝트 루트에서 파일 탐색
+        current_dir = os.path.dirname(os.path.abspath(__file__))  # api/
+        parent_dir = os.path.dirname(current_dir)                 # spunfix/ 또는 루트
+
+        target_file = None
+        candidates = [
+            os.path.join(parent_dir, safe_rel_path),
+            os.path.join(parent_dir, "spunfix", safe_rel_path),
+            os.path.join(os.path.dirname(parent_dir), "spunfix", safe_rel_path),
+        ]
+        for c in candidates:
+            if os.path.isfile(c):
+                target_file = c
+                break
+
+        if not target_file:
+            self._send_json(404, {"error": "요청하신 페이지 또는 파일을 찾을 수 없습니다.", "code": "NOT_FOUND"})
+            return
+
+        # MIME 타입 결정
+        content_type = "application/octet-stream"
+        if target_file.endswith(".html"):
+            content_type = "text/html; charset=utf-8"
+        elif target_file.endswith(".css"):
+            content_type = "text/css; charset=utf-8"
+        elif target_file.endswith(".js"):
+            content_type = "application/javascript; charset=utf-8"
+        elif target_file.endswith(".json"):
+            content_type = "application/json; charset=utf-8"
+        elif target_file.endswith(".png"):
+            content_type = "image/png"
+        elif target_file.endswith((".jpg", ".jpeg")):
+            content_type = "image/jpeg"
+        elif target_file.endswith(".svg"):
+            content_type = "image/svg+xml"
+        elif target_file.endswith(".ico"):
+            content_type = "image/x-icon"
+        elif target_file.endswith(".md"):
+            content_type = "text/markdown; charset=utf-8"
+
+        try:
+            with open(target_file, "rb") as f:
+                content = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+        except Exception as e:
+            _log(f"정적 파일 읽기 실패: {e!r}")
+            self._send_json(500, {"error": "파일을 읽는 중 오류가 발생했습니다.", "code": "FILE_READ_ERROR"})
 
     @staticmethod
     def _build_prompt(f, length_guide="약 1,500자"):
