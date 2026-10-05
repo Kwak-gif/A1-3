@@ -7,11 +7,14 @@ import sys
 from http.server import BaseHTTPRequestHandler
 import anthropic
 
-# 환경 변수에서 Claude API 키를 가져옵니다. 
-# ⚠️ 절대 코드에 직접 키를 쓰지 않습니다!
-API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
-MODEL_NAME = os.environ.get("ANTHROPIC_MODEL", "claude-3-haiku-20240307")
+def _clean_env(val, default=""):
+    return (val or default).strip()
+
+def _get_config():
+    api_key = _clean_env(os.environ.get("ANTHROPIC_API_KEY", ""))
+    base_url = _clean_env(os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")).rstrip("/")
+    model_name = _clean_env(os.environ.get("ANTHROPIC_MODEL", "claude-3-haiku-20240307"))
+    return api_key, base_url, model_name
 
 # --- 속도·비용 제한 설정 (개선 1·2·4) ---
 MAX_TOKENS = 1500          # 답변 길이 상한 기본값 (1500 토큰)
@@ -23,7 +26,6 @@ LIMITS = {                 # 입력 항목별 최대 글자 수
 }
 
 # --- '모름' 개수별 답변 길이 설정 ---
-# 모름이 많을수록 AI가 대분류·구간을 먼저 추정하고 후보를 넓게 봐야 하므로 상한을 늘립니다.
 UNKNOWN_VALUE = "모름"
 UNKNOWN_FIELDS = ("defect_type", "zone")   # '모름'을 선택할 수 있는 항목
 TOKEN_BY_UNKNOWN = {                        # 모름 개수: (max_tokens, 프롬프트 분량 기준)
@@ -44,20 +46,14 @@ def resolve_max_tokens(fields):
     return TOKEN_BY_UNKNOWN.get(count, TOKEN_BY_UNKNOWN[0])
 
 
-# 클라이언트는 한 번만 만들어 재사용합니다 (요청마다 새로 만들지 않음)
-_client = None
-
-
 def _get_client():
-    global _client
-    if _client is None:
-        _client = anthropic.Anthropic(
-            api_key=API_KEY,
-            base_url=BASE_URL,
-            timeout=API_TIMEOUT_SEC,
-            max_retries=API_MAX_RETRIES,
-        )
-    return _client
+    api_key, base_url, _ = _get_config()
+    return anthropic.Anthropic(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=API_TIMEOUT_SEC,
+        max_retries=API_MAX_RETRIES,
+    )
 
 
 def _log(message):
@@ -104,16 +100,20 @@ class handler(BaseHTTPRequestHandler):
                 })
                 return
 
-        if not API_KEY:
+        api_key, base_url, model_name = _get_config()
+
+        if not api_key:
             _log("ANTHROPIC_API_KEY 환경 변수가 없습니다.")
             self._send_json(500, {"error": "서버 설정(API 키)이 누락되었습니다. 관리자에게 문의하세요.", "code": "NO_API_KEY"})
             return
+
+        _log(f"진단 요청 시작: URL={base_url}, MODEL={model_name}, KEY_LEN={len(api_key)}")
 
         # 3) AI 호출 + 모름 개수별 max_tokens 별도 적용 함수 적용
         tokens_limit, length_guide = resolve_max_tokens(fields)
         try:
             response = _get_client().messages.create(
-                model=MODEL_NAME,
+                model=model_name,
                 max_tokens=tokens_limit,
                 messages=[{"role": "user", "content": self._build_prompt(fields, length_guide)}],
             )
@@ -122,8 +122,11 @@ class handler(BaseHTTPRequestHandler):
             self._send_json(504, {"error": "AI 응답이 지연되어 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.", "code": "AI_TIMEOUT"})
             return
         except anthropic.APIConnectionError as e:
-            _log(f"Claude 연결 실패: {e!r}")
-            self._send_json(502, {"error": "AI 서버에 연결하지 못했습니다. 네트워크 상태를 확인 후 다시 시도해주세요.", "code": "AI_CONNECTION"})
+            _log(f"Claude 연결 실패 (URL={base_url}): {e!r}")
+            self._send_json(502, {
+                "error": f"AI 서버({base_url})에 연결하지 못했습니다. Vercel 환경 변수의 주소 철자 또는 방화벽을 확인해주세요.",
+                "code": "AI_CONNECTION"
+            })
             return
         except anthropic.AuthenticationError as e:
             _log(f"인증 실패: {e!r}")
@@ -164,7 +167,8 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         """정적 파일(HTML, CSS, JS 등) 서빙 및 GET 요청 처리"""
         # URL 경로 정리 (쿼리스트링 제거 및 앞 슬래시 제거)
-        path = self.path.split("?")[0].lstrip("/")
+        raw_path = getattr(self, "path", "/") or "/"
+        path = raw_path.split("?")[0].lstrip("/")
         if not path or path == "index.html":
             path = "index.html"
 
