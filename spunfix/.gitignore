@@ -1,0 +1,25 @@
+# 환경 변수 파일 (API 키 등 비밀 정보)
+.env
+.env.local
+.env.*.local
+
+# Node.js 패키지 (Vercel 관련)
+node_modules/
+
+# Python 캐시
+__pycache__/
+*.pyc
+
+# OS 생성 파일
+.DS_Store
+Thumbs.db
+
+# IDE 설정
+.vscode/
+.idea/
+
+# Vercel 빌드 산출물
+.vercel/
+
+.vercel
+.env*

@@ -1,0 +1,220 @@
+# api/analyze.py
+# Vercel Serverless Function - AI 트러블슈팅 백엔드 (Claude 버전)
+
+import json
+import os
+import sys
+from http.server import BaseHTTPRequestHandler
+import anthropic
+
+# 환경 변수에서 Claude API 키를 가져옵니다. 
+# ⚠️ 절대 코드에 직접 키를 쓰지 않습니다!
+API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+MODEL_NAME = os.environ.get("ANTHROPIC_MODEL", "claude-3-haiku-20240307")
+
+# --- 속도·비용 제한 설정 (개선 1·2·4) ---
+MAX_TOKENS = 1500          # 답변 길이 상한 기본값 (1500 토큰)
+API_TIMEOUT_SEC = 60       # Claude 응답 최대 대기 시간 (SDK 기본 600초 → 60초)
+API_MAX_RETRIES = 1        # 실패 시 자동 재시도 횟수 (SDK 기본 2회 → 1회)
+MAX_BODY_BYTES = 10_000    # 요청 본문 최대 크기
+LIMITS = {                 # 입력 항목별 최대 글자 수
+    "resin": 50, "gsm": 10, "defect_type": 50, "zone": 50, "symptom": 1000,
+}
+
+# --- '모름' 개수별 답변 길이 설정 ---
+# 모름이 많을수록 AI가 대분류·구간을 먼저 추정하고 후보를 넓게 봐야 하므로 상한을 늘립니다.
+UNKNOWN_VALUE = "모름"
+UNKNOWN_FIELDS = ("defect_type", "zone")   # '모름'을 선택할 수 있는 항목
+TOKEN_BY_UNKNOWN = {                        # 모름 개수: (max_tokens, 프롬프트 분량 기준)
+    0: (MAX_TOKENS, "약 1,500자"),          # 기본 (1500 토큰)
+    1: (2000, "약 2,000자"),                # 대분류 또는 구간 중 1개 모름 (2000 토큰)
+    2: (2500, "약 2,500자"),                # 둘 다 모름 (2500 토큰)
+}
+
+
+def count_unknowns(fields):
+    """'모름'을 선택한 항목의 개수(0, 1, 2)를 계산합니다."""
+    return sum(1 for k in UNKNOWN_FIELDS if fields.get(k) == UNKNOWN_VALUE)
+
+
+def resolve_max_tokens(fields):
+    """모름 개수(0, 1, 2개)에 따라 (max_tokens, 분량 가이드)를 반환하는 함수"""
+    count = count_unknowns(fields)
+    return TOKEN_BY_UNKNOWN.get(count, TOKEN_BY_UNKNOWN[0])
+
+
+# 클라이언트는 한 번만 만들어 재사용합니다 (요청마다 새로 만들지 않음)
+_client = None
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        _client = anthropic.Anthropic(
+            api_key=API_KEY,
+            base_url=BASE_URL,
+            timeout=API_TIMEOUT_SEC,
+            max_retries=API_MAX_RETRIES,
+        )
+    return _client
+
+
+def _log(message):
+    """상세 오류는 화면이 아닌 서버 터미널 로그에만 남깁니다 (개선 4)"""
+    print(f"[analyze] {message}", file=sys.stderr, flush=True)
+
+
+class handler(BaseHTTPRequestHandler):
+    """Vercel이 호출하는 서버리스 함수 핸들러"""
+
+    def do_POST(self):
+        # 1) 요청 본문(body) 읽기 + 형식 검사 → 잘못된 요청은 400
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            content_length = 0
+        if content_length <= 0:
+            self._send_json(400, {"error": "요청 내용이 비어 있습니다.", "code": "EMPTY_BODY"})
+            return
+        if content_length > MAX_BODY_BYTES:
+            self._send_json(413, {"error": "입력 내용이 너무 깁니다.", "code": "TOO_LARGE"})
+            return
+
+        try:
+            body = json.loads(self.rfile.read(content_length))
+            if not isinstance(body, dict):
+                raise ValueError("JSON 객체가 아님")
+        except (ValueError, UnicodeDecodeError):
+            self._send_json(400, {"error": "요청 형식이 올바르지 않습니다.", "code": "BAD_JSON"})
+            return
+
+        # 2) 필수 입력값 확인 (숫자 등 글자가 아닌 값도 안전하게 처리)
+        fields = {key: str(body.get(key) or "").strip() for key in LIMITS}
+
+        if not fields["resin"] or not fields["gsm"] or not fields["defect_type"] or not fields["symptom"]:
+            self._send_json(400, {"error": "필수 입력값이 누락되었습니다.", "code": "MISSING_FIELD"})
+            return
+
+        for key, limit in LIMITS.items():
+            if len(fields[key]) > limit:
+                self._send_json(400, {
+                    "error": f"입력 글자 수를 초과했습니다. ({key}: 최대 {limit}자)",
+                    "code": "TOO_LONG",
+                })
+                return
+
+        if not API_KEY:
+            _log("ANTHROPIC_API_KEY 환경 변수가 없습니다.")
+            self._send_json(500, {"error": "서버 설정(API 키)이 누락되었습니다. 관리자에게 문의하세요.", "code": "NO_API_KEY"})
+            return
+
+        # 3) AI 호출 + 모름 개수별 max_tokens 별도 적용 함수 적용
+        tokens_limit, length_guide = resolve_max_tokens(fields)
+        try:
+            response = _get_client().messages.create(
+                model=MODEL_NAME,
+                max_tokens=tokens_limit,
+                messages=[{"role": "user", "content": self._build_prompt(fields, length_guide)}],
+            )
+        except anthropic.APITimeoutError:
+            _log("Claude 응답 시간 초과")
+            self._send_json(504, {"error": "AI 응답이 지연되어 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.", "code": "AI_TIMEOUT"})
+            return
+        except anthropic.APIConnectionError as e:
+            _log(f"Claude 연결 실패: {e!r}")
+            self._send_json(502, {"error": "AI 서버에 연결하지 못했습니다. 네트워크 상태를 확인 후 다시 시도해주세요.", "code": "AI_CONNECTION"})
+            return
+        except anthropic.AuthenticationError as e:
+            _log(f"인증 실패: {e!r}")
+            self._send_json(502, {"error": "AI 서버 인증에 실패했습니다. 관리자에게 API 키 확인을 요청하세요.", "code": "AI_AUTH"})
+            return
+        except anthropic.RateLimitError as e:
+            _log(f"요청 한도 초과: {e!r}")
+            self._send_json(429, {"error": "요청이 많아 잠시 처리할 수 없습니다. 1분 후 다시 시도해주세요.", "code": "AI_RATE_LIMIT"})
+            return
+        except anthropic.APIStatusError as e:
+            _log(f"Claude API 오류 (status={e.status_code}): {e!r}")
+            if e.status_code in (500, 502, 503, 529):
+                msg = "AI 서버가 일시적으로 혼잡합니다. 잠시 후 다시 시도해주세요."
+            else:
+                msg = f"AI 서버가 요청을 처리하지 못했습니다. (AI 코드: {e.status_code})"
+            self._send_json(502, {"error": msg, "code": "AI_API_ERROR"})
+            return
+        except Exception as e:
+            _log(f"예상치 못한 오류: {e!r}")
+            self._send_json(500, {"error": "서버 내부 오류가 발생했습니다. 잠시 후 다시 시도해주세요.", "code": "INTERNAL"})
+            return
+
+        # 4) 결과 추출 (빈 답변·잘린 답변 확인)
+        ai_result = "".join(
+            block.text for block in (response.content or []) if getattr(block, "type", "") == "text"
+        ).strip()
+
+        if not ai_result:
+            _log(f"빈 답변 수신 (stop_reason={response.stop_reason})")
+            self._send_json(502, {"error": "AI가 빈 답변을 보냈습니다. 다시 시도해주세요.", "code": "AI_EMPTY"})
+            return
+
+        self._send_json(200, {
+            "result": ai_result,
+            "truncated": response.stop_reason == "max_tokens",
+        })
+
+    def do_GET(self):
+        """GET 요청은 지원하지 않음을 JSON으로 안내"""
+        self._send_json(405, {"error": "POST 요청만 지원합니다.", "code": "METHOD_NOT_ALLOWED"})
+
+    @staticmethod
+    def _build_prompt(f, length_guide="약 1,500자"):
+        """AI에게 보낼 프롬프트 구성 ('모름' 선택 시 추정 지시 및 분량 가이드 반영)"""
+        zone_info = f"  - 발생 구간: {f['zone']}\n" if f["zone"] else ""
+        unknown_guide = ""
+        if f.get("defect_type") == UNKNOWN_VALUE or f.get("zone") == UNKNOWN_VALUE:
+            unknown_guide = "- '모름'으로 입력된 항목(대분류/발생 구간)은 '구체적 증상'을 바탕으로 가장 가능성 높은 항목을 먼저 추정하여 서두에 밝혀주세요.\n"
+
+        return f"""당신은 스펀본드(Spunbond) 부직포 제조 공정의 품질 트러블슈팅 전문가입니다.
+아래 현장 정보를 바탕으로 분석해주세요.
+
+[제품 사양]
+  - 수지 소재: {f['resin']}
+  - 목표 평량: {f['gsm']} GSM
+
+[불량 정보]
+  - 불량 대분류: {f['defect_type']}
+{zone_info}  - 구체적 증상: {f['symptom']}
+
+[작성 규칙]
+- 현장 작업자가 바로 읽고 실행할 수 있도록 핵심만 간결하게 작성하세요.
+- 전체 분량은 {length_guide} 이내로 작성하세요.
+- 각 항목은 짧은 글머리표(-) 위주로 쓰고, 표와 HTML 태그는 사용하지 마세요.
+{unknown_guide}
+다음 형식으로 한국어로 답변해주세요:
+
+**[전체 목차]**
+전체 답변의 핵심 목차를 먼저 요약해서 보여주세요.
+
+**1. 예상 원인 순위 (상위 3가지)**
+각 원인에 대해 왜 이 문제가 발생하는지 간단히 설명해주세요.
+
+**2. 현장 점검 포인트**
+현장 작업자가 즉시 확인해야 할 구체적인 위치와 방법을 알려주세요.
+
+**3. 단계별 조치 방향**
+[즉각 조치] → [공정 조정] → [예방 조치] 순서로 알려주세요.
+
+**4. 안전 수칙**
+해당 점검·조치 시 주의할 점을 적어주세요.
+
+⚠️ 마지막에 반드시 다음 문구를 포함하세요:
+"본 안내는 참고용이며 실제 조치는 사내 표준(SOP)과 담당자 판단을 따르세요."
+"""
+
+    def _send_json(self, status_code, data):
+        """JSON 응답을 보내는 유틸리티 메서드"""
+        payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)

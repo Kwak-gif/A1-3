@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SpunFix – 부직포 공정·품질 트러블슈팅 도우미</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- ===== 내비게이션 바 ===== -->
+  <nav id="navbar">
+    <div class="nav-logo">🛠️ SpunFix</div>
+    <ul class="nav-links">
+      <li><a href="#home">메인</a></li>
+      <li><a href="#about">서비스 소개</a></li>
+      <li><a href="#troubleshoot">AI 트러블슈팅</a></li>
+      <li><a href="#faq">용어·FAQ</a></li>
+      <li><a href="#contact">문의</a></li>
+    </ul>
+  </nav>
+
+  <!-- ===== 1. 메인 (Home) ===== -->
+  <section id="home" class="section">
+    <h1>부직포 공정·품질 트러블슈팅 도우미</h1>
+    <p>스펀본드 라인의 불량 증상을 입력하면, AI가 예상 원인과 현장 조치 가이드를 즉시 제공합니다.</p>
+    <a href="#troubleshoot" class="btn-primary">🔍 트러블슈팅 시작하기</a>
+  </section>
+
+  <!-- ===== 2. 서비스 소개 (About) ===== -->
+  <section id="about" class="section">
+    <h2>서비스 소개</h2>
+    <div class="about-cards">
+      <div class="card">
+        <h3>🎯 현장 맞춤 진단</h3>
+        <p>평량(GSM), 소재, 불량 증상을 입력하면 스펀본드 공정에 특화된 분석을 제공합니다.</p>
+      </div>
+      <div class="card">
+        <h3>⚡ 즉각 조치 가이드</h3>
+        <p>예상 원인 순위, 점검 포인트, 단계별 조치 방향을 한눈에 확인할 수 있습니다.</p>
+      </div>
+      <div class="card">
+        <h3>🔒 안전 우선</h3>
+        <p>모든 진단 결과에 안전 수칙과 면책 문구를 함께 안내합니다.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 3. AI 트러블슈팅 (Troubleshoot) ===== -->
+  <section id="troubleshoot" class="section">
+    <h2>AI 트러블슈팅</h2>
+
+    <form id="troubleshoot-form">
+      <!-- 제품 사양 입력 -->
+      <fieldset>
+        <legend>제품 사양</legend>
+
+        <label for="resin">수지 소재</label>
+        <select id="resin" name="resin" required>
+          <option value="">-- 선택하세요 --</option>
+          <option value="PP">PP (폴리프로필렌)</option>
+          <option value="PET">PET (폴리에스터)</option>
+          <option value="PE">PE (폴리에틸렌)</option>
+          <option value="기타">기타</option>
+        </select>
+
+        <label for="gsm">목표 평량 (GSM, g/m²)</label>
+        <input type="number" id="gsm" name="gsm" placeholder="예: 40" min="1" max="500" required>
+      </fieldset>
+
+      <!-- 불량 증상 입력 -->
+      <fieldset>
+        <legend>불량 증상</legend>
+
+        <label for="defect-type">불량 대분류 <a href="#glossary-defect" class="hint-link">(분류 기준 보기)</a></label>
+        <select id="defect-type" name="defect_type" required>
+          <option value="">-- 선택하세요 --</option>
+          <option value="방사 불안정">방사 불안정</option>
+          <option value="두께/평량 불균일">두께/평량 불균일</option>
+          <option value="외관 결점">외관 결점 (드립, 샷, 얼룩 등)</option>
+          <option value="물성 부족">물성 부족 (강도/신도)</option>
+          <option value="모름">모름 (AI가 증상으로 추정)</option>
+        </select>
+
+        <label for="zone">발생 구간 (선택)</label>
+        <select id="zone" name="zone">
+          <option value="">-- 선택 (선택사항) --</option>
+          <option value="익스트루더">익스트루더 (압출기)</option>
+          <option value="스핀팩/다이">스핀팩 / 다이</option>
+          <option value="냉각/흡입 존">냉각 / 흡입 존</option>
+          <option value="웹 형성망">웹 형성망 (포밍벨트)</option>
+          <option value="캘린더 롤">캘린더 롤</option>
+          <option value="모름">모름 (AI가 증상으로 추정)</option>
+        </select>
+
+        <label for="symptom">구체적 증상 기술</label>
+        <textarea id="symptom" name="symptom" rows="4" maxlength="1000"
+          placeholder="예: 토출구 주변에 드립(방울)이 생기고, 폭 방향으로 좌우 두께 편차가 10% 이상 발생함"
+          required></textarea>
+      </fieldset>
+
+      <button type="submit" class="btn-primary" id="submit-btn">🔍 진단 요청</button>
+    </form>
+
+    <!-- 로딩 표시 -->
+    <div id="loading" class="hidden">
+      <p>⏳ AI가 분석 중입니다... 잠시만 기다려주세요.</p>
+    </div>
+
+    <!-- 오류 메시지 -->
+    <div id="error-msg" class="hidden error-box"></div>
+
+    <!-- 결과 표시 영역 -->
+    <div id="result" class="hidden">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #eee; padding-bottom: 1rem; margin-bottom: 1rem;">
+        <h3 style="margin: 0;">📋 진단 결과</h3>
+        <button type="button" id="download-btn" class="btn-primary" style="padding: 0.5rem 1rem; font-size: 0.9rem;">📥 .md 다운로드</button>
+      </div>
+      <div id="result-content"></div>
+    </div>
+  </section>
+
+  <!-- ===== 4. 용어·FAQ ===== -->
+  <section id="faq" class="section">
+    <h2>용어 사전 · FAQ</h2>
+
+    <h3>📖 현장 용어 사전</h3>
+    <dl class="glossary">
+      <dt>GSM (Gram per Square Meter)</dt>
+      <dd>가로 1m × 세로 1m 크기 원단의 무게(g). 부직포 두께·밀도의 기본 단위.</dd>
+
+      <dt>MFI (Melt Flow Index)</dt>
+      <dd>수지(플라스틱 원료)가 녹은 상태에서 얼마나 잘 흐르는지 나타내는 숫자. 높을수록 잘 흐름.</dd>
+
+      <dt>Quenching (퀜칭)</dt>
+      <dd>방사 직후 뜨거운 섬유에 찬 바람을 불어 빠르게 식히는 공정.</dd>
+
+      <dt>Drip (드립)</dt>
+      <dd>노즐 토출구에서 폴리머가 방울처럼 떨어지는 불량 현상.</dd>
+
+      <dt>Shot (샷)</dt>
+      <dd>폴리머 덩어리가 원단 위에 굳어 붙는 외관 불량.</dd>
+
+      <dt>Nip Pressure (닙압)</dt>
+      <dd>캘린더 롤 두 개가 원단을 누르는 압력. 원단 접착 강도에 직접 영향.</dd>
+    </dl>
+
+    <h3 id="glossary-defect">🗂️ 불량 대분류 정의 · 범위</h3>
+    <dl class="glossary">
+      <dt>방사 불안정</dt>
+      <dd><strong>정의:</strong> 녹은 원료가 노즐에서 실(필라멘트)로 뽑혀 나오는 과정 자체가 일정하지 않은 상태.<br>
+        <strong>범위:</strong> 사절(실 끊김), 노즐 휨·편류, 토출 압력 요동, 필라멘트 흔들림.<br>
+        <strong>주요 구간:</strong> 익스트루더, 스핀팩/다이, 냉각/흡입 존.</dd>
+
+      <dt>두께/평량 불균일</dt>
+      <dd><strong>정의:</strong> 원단의 무게(GSM)나 두께가 위치에 따라 기준보다 크게 차이 나는 상태.<br>
+        <strong>범위:</strong> 폭 방향(CD) 편차, 진행 방향(MD) 주기적 편차, 엣지 얇아짐, 국부적 얇은 곳.<br>
+        <strong>주요 구간:</strong> 스핀팩/다이, 냉각/흡입 존, 웹 형성망.</dd>
+
+      <dt>외관 결점</dt>
+      <dd><strong>정의:</strong> 원단 표면에 눈으로 보이는 이물·덩어리·구멍 등의 결함.<br>
+        <strong>범위:</strong> 드립, 샷, 얼룩·오염, 핀홀(구멍), 롤 융착 자국, 주름.<br>
+        <strong>주요 구간:</strong> 스핀팩/다이, 웹 형성망, 캘린더 롤.</dd>
+
+      <dt>물성 부족</dt>
+      <dd><strong>정의:</strong> 완성된 원단의 기계적 성질이 규격에 못 미치는 상태.<br>
+        <strong>범위:</strong> 인장강도 부족, 신도(늘어남) 이상, 접착(본딩) 약함, 보풀 발생.<br>
+        <strong>주요 구간:</strong> 냉각/흡입 존(연신), 캘린더 롤(온도·닙압).</dd>
+
+      <dt>모름</dt>
+      <dd>위 4가지 중 어디에 속하는지 판단이 어려울 때 선택. AI가 <strong>증상 설명을 근거로 대분류(또는 발생 구간)를 먼저 추정</strong>한 뒤 진단합니다. 증상을 구체적으로 적을수록 정확해집니다.</dd>
+    </dl>
+
+    <h3>❓ 자주 묻는 질문</h3>
+    <details>
+      <summary>Q. AI 진단 결과를 바로 현장에 적용해도 되나요?</summary>
+      <p>A. 본 서비스는 참고용 가이드입니다. 설비 조작 전 반드시 사내 표준 작업 지침서(SOP)를 확인하고, 안전 장비를 착용하세요.</p>
+    </details>
+    <details>
+      <summary>Q. 어떤 종류의 부직포를 지원하나요?</summary>
+      <p>A. 현재 스펀본드(Spunbond) 공정에 특화되어 있으며, 멜트블로운(Meltblown) 등은 향후 확장 예정입니다.</p>
+    </details>
+    <details>
+      <summary>Q. 입력한 데이터는 저장되나요?</summary>
+      <p>A. 입력 데이터는 AI 분석 용도로만 사용되며, 별도로 서버에 저장하지 않습니다.</p>
+    </details>
+  </section>
+
+  <!-- ===== 5. 문의 (Contact) ===== -->
+  <section id="contact" class="section">
+    <h2>문의</h2>
+    <p>새로운 불량 사례 제보, 서비스 개선 의견 등을 보내주세요.</p>
+    <form id="contact-form">
+      <label for="contact-name">이름</label>
+      <input type="text" id="contact-name" placeholder="홍길동" required>
+
+      <label for="contact-email">이메일</label>
+      <input type="email" id="contact-email" placeholder="example@company.com" required>
+
+      <label for="contact-message">문의 내용</label>
+      <textarea id="contact-message" rows="4" placeholder="문의 내용을 입력해주세요." required></textarea>
+
+      <button type="submit" class="btn-primary">📨 보내기</button>
+    </form>
+  </section>
+
+  <!-- ===== 하단 푸터 ===== -->
+  <footer>
+    <p>&copy; 2026 SpunFix – 부직포 공정·품질 트러블슈팅 도우미</p>
+    <p>본 서비스의 AI 진단 결과는 참고용이며, 현장 적용 시 반드시 SOP를 준수하세요.</p>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>
