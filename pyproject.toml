@@ -1,2 +1,11 @@
+[project]
+name = "spunfix"
+version = "0.1.0"
+description = "SpunFix Spunbond Quality Troubleshooter"
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic==1.4.0",
+]
+
 [tool.vercel]
 entrypoint = "api.analyze:handler"
